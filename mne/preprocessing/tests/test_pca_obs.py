@@ -4,41 +4,60 @@
 # License: BSD-3-Clause
 # Copyright the MNE-Python contributors.
 
-# TODO: migrate this structure to test out function
+from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from mne.io import read_raw_fif
-from mne.preprocessing.pca_obs import pca_obs
-from mne.datasets.testing import data_path, requires_testing_data
+from mne.io.fiff.raw import Raw
+from mne.preprocessing import apply_pca_obs
 
-# TODO: Where are the test files we want to use located?
-fname = data_path(download=False) / "eyetrack" / "test_eyelink.asc"
+data_path = Path(__file__).parents[2] / "io" / "tests" / "data"
+raw_fname = data_path / "test_raw.fif"
 
-@requires_testing_data
-@pytest.mark.parametrize(
-    # TODO: Are there any parameters we can cycle through to 
-    # test multiple? Different fs, windows, highpass freqs, etc.?
-    # TODO: how do we determine qrs and filter_coords? What are these?
-    "fs, highpass_freq, qrs, filter_coords",
-    [
-        (0.2, 1.0, 100, 200),
-        (0.1, 2.0, 100, 200),
-    ],
-)
-def test_heart_artifact_removal(fs, highpass_freq, qrs, filter_coords):
+
+@pytest.fixture()
+def short_raw_data():
+    """Create a short, picked raw instance."""
+    return read_raw_fif(raw_fname, preload=True)
+
+
+def test_heart_artifact_removal(short_raw_data: Raw):
     """Test PCA-OBS analysis and heart artifact removal of ECG datasets."""
-    raw = read_raw_fif(fname)
+    # fake some random qrs events
+    ecg_event_samples = np.arange(0, len(short_raw_data.times), 1400) + 1430
 
-    # Do something with fs and highpass as processing of the data?
-    ...
+    # copy the original raw. heart artifact is removed in-place
+    orig_df: pd.DataFrame = short_raw_data.to_data_frame().copy(deep=True)
 
-    # call pca_obs algorithm
-    result = pca_obs(raw, qrs=qrs, filter_coords=filter_coords)
+    # perform heart artifact removal
+    apply_pca_obs(raw=short_raw_data, picks=["eeg"], qrs=ecg_event_samples, n_jobs=1)
 
-    # assert results
-    assert result is not None
-    assert result.shape == (100, 100)
-    assert result.shape == raw.shape  # is this a condition we can test? 
-    assert result[0, 0] == 1.0
-    ... 
+    # compare processed df to original df
+    removed_heart_artifact_df: pd.DataFrame = short_raw_data.to_data_frame()
+
+    # ensure all column names remain the same
+    pd.testing.assert_index_equal(
+        orig_df.columns,
+        removed_heart_artifact_df.columns,
+    )
+
+    # ensure every column starting with EEG has been altered
+    altered_cols = [c for c in orig_df.columns if c.startswith("EEG")]
+    for col in altered_cols:
+        with pytest.raises(
+            AssertionError
+        ):  # make sure that error is raised when we check equal
+            pd.testing.assert_series_equal(
+                orig_df[col],
+                removed_heart_artifact_df[col],
+            )
+
+    # ensure every column not starting with EEG has not been altered
+    unaltered_cols = [c for c in orig_df.columns if not c.startswith("EEG")]
+    pd.testing.assert_frame_equal(
+        orig_df[unaltered_cols],
+        removed_heart_artifact_df[unaltered_cols],
+    )
